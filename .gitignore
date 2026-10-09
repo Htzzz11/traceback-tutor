@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.idea/
+.DS_Store
+.env
+
+# Generated data and model outputs (rebuilt by scripts; fixtures are tracked)
+data/*
+!data/fixtures/
+adapters/
+models/
+runs/
+
+# Private planning doc (kept local)
+docs/project-description.md
