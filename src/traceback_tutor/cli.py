@@ -7,6 +7,7 @@ prompt.build_messages, generates with mlx-lm, prints the parsed response.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -130,6 +131,7 @@ def main(argv: list[str] | None = None, generate_fn: GenerateFn | None = None) -
                 adapter = str(DEFAULT_ADAPTER)
             else:
                 print(f"(No adapter at {DEFAULT_ADAPTER}; using the base model.)", file=sys.stderr)
+        os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")  # no "Fetching 7 files" bar
         generate_fn = make_generate_fn(load(args.model, adapter), args.max_tokens)
 
     print(f"Your program crashed with {result.error_type}.\n")
