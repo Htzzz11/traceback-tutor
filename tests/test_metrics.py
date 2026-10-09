@@ -103,6 +103,9 @@ def test_quoting_the_traceback_is_not_a_fix(fixture_examples):
         "Line 5: change `totl` to `total`.\n\nHint: ?",
         "Line 5: Replace totl with total.\n\nHint: ?",
         "Line 5: It should be `total`.\n\nHint: ?",
+        "Line 5: `totl` is not defined. Did you mean `total`?",
+        # real base-model output on the off-by-one fixture, scored as no fix before
+        "Line 4: To fix this, we should change the loop condition to `i < len(xs)`.\n\nHint: ?",
     ],
 )
 def test_fix_phrases(fixture_examples, text):

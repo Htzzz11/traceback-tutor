@@ -63,12 +63,16 @@ ERROR_KEYWORDS: dict[str, list[str]] = {
 }
 # fmt: on
 
-# "change totl to total", "rename `x` with `y`": one code-ish token on each side.
-_CHANGE_TO_RE = re.compile(
+# Phrases that hand over the fix in words. Each is a case seen or expected in model output.
+_FIX_PHRASES = [
+    # "change totl to total", "replace `x` with `y`": one code-ish token on each side
     r"\b(?:change|rename|replace)\s+`?[\w.()\[\]]+`?\s+(?:to|with|by)\s+`?[\w.()\[\]'\"]",
-    re.IGNORECASE,
-)
-_SHOULD_BE_RE = re.compile(r"\bshould\s+(?:be|read|say)\s+`", re.IGNORECASE)
+    # "change the loop condition to `i < len(xs)`": a few words, then code in backticks
+    r"\b(?:change|rename|replace)\b[^.?!\n]{0,60}?\b(?:to|with|by)\s+`",
+    r"\bshould\s+(?:be|read|say)\s+`",  # "it should be `total`"
+    r"\bdid you mean\b",  # echoing Python's "Did you mean: 'total'?" names the fix
+]
+_FIX_PHRASE_RE = re.compile("|".join(_FIX_PHRASES), re.IGNORECASE)
 _FENCE_RE = re.compile(r"```[^\n]*\n(.*?)(?:```|$)", re.DOTALL)  # unclosed fence runs to end
 _LINE_NUMBER_PREFIX_RE = re.compile(r"^\s*\d+\s*\|\s?")  # echoed "5 | code" from the prompt
 
@@ -123,12 +127,14 @@ def gives_fix(example: Example, response: str) -> bool:
        traceback (quoting the buggy line is fine; writing new code isn't).
     2. Any response line parses as non-trivial Python (see _is_nontrivial_python) and
        isn't copied from the program. Catches unfenced corrected code.
-    3. A fix phrase: "change X to Y" / "replace X with Y" / "should be `...`".
+    3. A fix phrase (_FIX_PHRASES) outside fenced blocks: "change X to Y", "change the condition to `code`",
+       "replace X with Y", "should be `...`", "did you mean ...".
 
     Blind spots: a fix described in words only ("add a colon at the end of line 2",
-    "use one less in the range") or as a question ("Should it be `total`?"), and
-    corrected code inside inline backticks (`str(age)`) are not caught. "change it to a
-    string" is caught, which is arguably right.
+    "use one less in the range", "convert `age` to a string") or as a question
+    ("Should it be `total`?"), and corrected code inside inline backticks without a fix
+    phrase ("use `str(age)`") are not caught. "change it to a string" is caught, which
+    is arguably right.
     """
     program = {line.strip() for line in example.code.splitlines()}
     copied = program | {line.strip() for line in example.traceback.splitlines()}
@@ -142,7 +148,8 @@ def gives_fix(example: Example, response: str) -> bool:
         line = _code_line(line)
         if line and line not in program and _is_nontrivial_python(line):
             return True
-    return bool(_CHANGE_TO_RE.search(response) or _SHOULD_BE_RE.search(response))
+    prose = _FENCE_RE.sub("", response)  # fences were checked above (a quoted traceback
+    return bool(_FIX_PHRASE_RE.search(prose))  # may contain Python's own "Did you mean")
 
 
 def score(example: Example, response: str) -> dict[str, bool | int]:
