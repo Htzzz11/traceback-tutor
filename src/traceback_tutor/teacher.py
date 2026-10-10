@@ -10,7 +10,8 @@ and error type instead of having to diagnose them.
 
 Usage:
     uv run --env-file .env python -m traceback_tutor.teacher \
-        --in data/v0/examples.jsonl --out data/v0/labelled.jsonl --limit 10
+        --in data/v0/train.jsonl data/v0/val.jsonl data/v0/test.jsonl \
+        --out data/v0/labelled.jsonl --limit 10
 """
 
 from __future__ import annotations
@@ -211,11 +212,23 @@ def _looks_like_rewrite(span: str, code: str, bug_src: str) -> bool:
     return matched / len(span) >= 0.8
 
 
+def _names_suggestion(traceback: str, response: str) -> bool:
+    """Does the response name the spelling from Python's "Did you mean: 'x'?" note?"""
+    m = re.search(r"Did you mean: '(\w+)'\?", traceback)
+    if not m:
+        return False
+    name = m.group(1)
+    # Short names like `n` or `a` only count in backticks; as bare words they are English.
+    pattern = rf"`{name}`" if len(name) < 3 else rf"\b{name}\b"
+    return re.search(pattern, response) is not None
+
+
 def passes_filters(example: Example, response: str) -> tuple[bool, str]:
     """Automatic quality filters on a raw teacher response. Returns (ok, reason).
 
     Rejects: no "Line N:" prefix; cited line is neither bug_line nor error_line;
-    a code block or a corrected line of code; spelling out the edit; explanation
+    a code block or a corrected line of code; spelling out the edit; naming the
+    "Did you mean" suggestion; explanation
     over MAX_WORDS words; missing hint, more than one hint, or a hint that isn't a question.
     """
     parsed = parse_response(response)
@@ -234,6 +247,8 @@ def passes_filters(example: Example, response: str) -> tuple[bool, str]:
     sentences = _SENTENCE_RE.findall(f"{parsed.explanation}\n{parsed.hint or ''}")
     if any(r.search(s) for s in sentences for r in _FIX_RES):
         return False, "gives_fix"
+    if _names_suggestion(example.traceback, response):
+        return False, "names_suggestion"
     if len(parsed.explanation.split()) > MAX_WORDS:
         return False, "too_long"
     if not parsed.hint:
@@ -257,7 +272,7 @@ def _ids_in(path: Path) -> set[str]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--in", dest="in_path", type=Path, required=True)
+    parser.add_argument("--in", dest="in_paths", type=Path, nargs="+", required=True)
     parser.add_argument("--out", type=Path, required=True, help="labelled Examples that pass")
     parser.add_argument("--limit", type=int, default=None, help="max new API calls this run")
     parser.add_argument("--model", default=MODEL)
@@ -266,7 +281,8 @@ def main(argv: list[str] | None = None) -> None:
     # Every call (passed or rejected) is logged next to --out, so a rerun never pays twice.
     log_path = args.out.with_name(args.out.stem + ".log.jsonl")
     done = _ids_in(args.out) | _ids_in(log_path)
-    todo = [ex for ex in read_jsonl(args.in_path) if ex.id not in done][: args.limit]
+    examples = [ex for path in args.in_paths for ex in read_jsonl(path)]
+    todo = [ex for ex in examples if ex.id not in done][: args.limit]
     print(f"{len(done)} already done, {len(todo)} to label with {args.model}")
 
     client = OpenAI(max_retries=MAX_RETRIES)

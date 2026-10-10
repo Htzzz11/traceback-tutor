@@ -111,6 +111,7 @@ BAD_RESPONSES = {
     "code_block": "Line 5: The name is wrong.\n\n```python\nreturn total\n```\n\nHint: See?",
     "corrected_code": "Line 5: The name is misspelt.\n\nHint: Did you mean `return total`?",
     "gives_fix": "Line 5: The name is misspelt. Change `totl` to `total`.\n\nHint: Same name?",
+    "names_suggestion": "Line 5: You wrote `totl` but meant `total`.\n\nHint: Same name?",
     "no_hint": "Line 5: Python doesn't know any variable called `totl`.",
     "hint_not_question": "Line 5: `totl` was never created.\n\nHint: Look at line 2.",
     "multiple_hints": "Line 5: `totl` doesn't exist.\n\nHint: Same name?\n\nHint: Line 2?",
@@ -147,14 +148,20 @@ def test_filters_reject_giving_the_fix(fixture_examples, response):
 def test_cli_skips_examples_already_done(tmp_path, monkeypatch, fixture_examples):
     client = FakeClient("Line 5: `totl` was never created.\n\nHint: Same name?")
     monkeypatch.setattr(teacher, "OpenAI", lambda **kwargs: client)
-    in_path, out_path = tmp_path / "in.jsonl", tmp_path / "out.jsonl"
-    write_jsonl(in_path, fixture_examples)
+    train, test, out_path = (
+        tmp_path / "train.jsonl",
+        tmp_path / "test.jsonl",
+        tmp_path / "out.jsonl",
+    )
+    write_jsonl(train, fixture_examples[:3])
+    write_jsonl(test, fixture_examples[3:])
+    args = ["--in", str(train), str(test), "--out", str(out_path)]
 
-    teacher.main(["--in", str(in_path), "--out", str(out_path), "--limit", "2"])
+    teacher.main([*args, "--limit", "2"])
     assert len(client.requests) == 2
-    teacher.main(["--in", str(in_path), "--out", str(out_path)])
-    assert len(client.requests) == 5  # only the 3 not yet done
-    teacher.main(["--in", str(in_path), "--out", str(out_path)])
+    teacher.main(args)
+    assert len(client.requests) == 5  # only the 3 not yet done, across both files
+    teacher.main(args)
     assert len(client.requests) == 5
 
     # the canned answer only fits the misspelt_variable fixture; the rest are rejected

@@ -42,6 +42,8 @@ Hint: <one question>
 - The exact edit, such as "change `totl` to `total`", "add a `:` at the end of line 2" or "use
   `range(len(xs))`".
 - More than one hint, or a list of possible fixes.
+- Naming the right spelling from Python's `Did you mean: ...?` note. It is the fix. A hint can
+  ask the student to read that part of the error instead.
 
 ## Bad examples
 
