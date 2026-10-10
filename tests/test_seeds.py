@@ -7,12 +7,19 @@ from traceback_tutor.seeds import (
     near_duplicate_groups,
     shape,
     stdlib_only,
+    uses_semicolons,
 )
 
 
 def test_clean_code_normalises_mbpp_formatting():
     raw = "def f(x): \r\n\treturn x  \r\n"
     assert clean_code(raw) == "def f(x):\n    return x"
+
+
+def test_uses_semicolons_ignores_semicolons_in_strings():
+    assert uses_semicolons("a = 1; b = 2")
+    assert uses_semicolons("count = 0;")
+    assert not uses_semicolons("s = 'a;b'\nt = s.split(';')")
 
 
 def test_stdlib_only():

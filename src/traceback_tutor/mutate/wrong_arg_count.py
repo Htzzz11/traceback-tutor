@@ -1,12 +1,14 @@
 """TypeError: a call passes one argument too few or too many.
 
-  area(4, 3)       -> area(4)          (drop an argument)
-  xs.append(x)     -> xs.append()
-  area(4, 3)       -> area(4, 3, 3)    (repeat the last argument)
+  area(4, 3)          -> area(4)               (leave an argument out)
+  xs.append(x)        -> xs.append()
+  helper(xs, n)       -> helper(xs, n, n)      (one too many: own functions only)
 
-Any call qualifies: the student's own functions, builtins and methods. A test call
-(`assert area(4) == 12`) is picked only TEST_CALL_SHARE of the time: those always
-crash cleanly, so without a cap they would crowd out bugs inside the program.
+Any call qualifies for leaving an argument out. "One too many" is only used on calls
+to the student's own functions inside the program: `len(word, word)` is not a
+mistake learners make. A test call (`assert area(4) == 12`) is picked only
+TEST_CALL_SHARE of the time, and never just because the program has no call of its
+own: test calls always crash cleanly, so they would crowd out bugs in the program.
 Calls that still run, or fail for another reason, are dropped later by
 build_dataset's error check.
 """
@@ -18,11 +20,14 @@ import random
 
 from .base import MutationResult, on_one_line, replace_node, source
 
-TEST_CALL_SHARE = 0.1
+# Test calls always crash cleanly, so they survive the error check more often than
+# calls in the program: 0.1 here ended up as 29% of examples, 0.05 gives about 17%.
+TEST_CALL_SHARE = 0.05
 
 
 def apply(code: str, program_lines: int, rng: random.Random) -> MutationResult | None:
     tree = ast.parse(code)
+    own_functions = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
     sites = [
         node
         for node in ast.walk(tree)
@@ -34,17 +39,19 @@ def apply(code: str, program_lines: int, rng: random.Random) -> MutationResult |
     ]
     in_program = [c for c in sites if c.lineno <= program_lines]
     in_tests = [c for c in sites if c.lineno > program_lines]
-    if not in_program or (in_tests and rng.random() < TEST_CALL_SHARE):
-        sites = in_tests
-    else:
-        sites = in_program
+    sites = in_tests if in_tests and rng.random() < TEST_CALL_SHARE else in_program
     if not sites:
         return None
     call = rng.choice(sites)
     args = [source(code, a) for a in call.args]
-    if rng.random() < 0.5:
-        del args[rng.randrange(len(args))]
-    else:
+    own_call = (
+        isinstance(call.func, ast.Name)
+        and call.func.id in own_functions
+        and call.lineno <= program_lines
+    )
+    if own_call and rng.random() < 0.5:
         args.append(args[-1])
+    else:
+        del args[rng.randrange(len(args))]
     args += [source(code, kw) for kw in call.keywords]
     return replace_node(code, call, f"{source(code, call.func)}({', '.join(args)})")

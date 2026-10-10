@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import difflib
+import io
 import sys
+import tokenize
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -45,7 +47,7 @@ def load_seeds(limit: int | None = None, workers: int = 8) -> list[Seed]:
     """Load MBPP seed programs whose reference solution passes its own tests.
 
     Drop seeds that fail, use imports beyond the standard library, need MBPP's
-    test_setup_code, are longer than MAX_LINES, take longer than SEED_TIMEOUT, or
+    test_setup_code, are longer than MAX_LINES, use semicolons, take longer than SEED_TIMEOUT, or
     duplicate an earlier program up to identifier names. Returns seeds in task_id
     order; `limit` keeps the first n.
     """
@@ -64,7 +66,8 @@ def load_seeds(limit: int | None = None, workers: int = 8) -> list[Seed]:
         except SyntaxError:
             continue
         fp = fingerprint(tree)
-        if len(code.splitlines()) > MAX_LINES or not stdlib_only(tree) or fp in fingerprints:
+        too_long = len(code.splitlines()) > MAX_LINES
+        if too_long or uses_semicolons(code) or not stdlib_only(tree) or fp in fingerprints:
             continue
         fingerprints.add(fp)
         tests = [t.strip() for t in row["test_list"]]
@@ -86,6 +89,13 @@ def clean_code(code: str) -> str:
     """
     lines = code.replace("\r\n", "\n").expandtabs(4).split("\n")
     return "\n".join(line.rstrip() for line in lines).strip("\n")
+
+
+def uses_semicolons(code: str) -> bool:
+    """`a = 1; b = 2` or `count = 0;`: not how beginners are taught to write Python, and
+    two statements on one line blur which one a line number points at."""
+    tokens = tokenize.generate_tokens(io.StringIO(code).readline)
+    return any(t.type == tokenize.OP and t.string == ";" for t in tokens)
 
 
 def stdlib_only(tree: ast.AST) -> bool:

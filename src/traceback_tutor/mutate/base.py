@@ -40,3 +40,15 @@ def replace_node(code: str, node: ast.AST, new_text: str) -> MutationResult:
     raw = lines[i].encode()  # col offsets are UTF-8 byte offsets
     lines[i] = (raw[: node.col_offset] + new_text.encode() + raw[node.end_col_offset :]).decode()
     return MutationResult("\n".join(lines), node.lineno)
+
+
+def pick(sites_by_kind: dict[str, list], rng: random.Random):
+    """Pick a kind of edit uniformly among kinds that have a site, then one of its sites.
+
+    Without this, the most common kind of site (e.g. `xs[i]` for off-by-one) would
+    crowd out rarer, more instructive ones. Returns None if there are no sites.
+    """
+    kinds = [kind for kind, sites in sites_by_kind.items() if sites]
+    if not kinds:
+        return None
+    return rng.choice(sites_by_kind[rng.choice(kinds)])
