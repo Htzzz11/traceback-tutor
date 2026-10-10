@@ -84,6 +84,16 @@ def test_splits_never_share_a_seed():
     assert Counter(ex.split for ex in examples) == {"train": 200, "val": 25, "test": 25}
 
 
+def test_near_duplicate_groups_never_straddle_splits():
+    groups = {f"s{i}": f"s{i - i % 5}" for i in range(50)}  # 10 groups of 5 seeds
+    examples = assign_splits(fake_examples(), groups=groups)
+    splits_of = defaultdict(set)
+    for ex in examples:
+        splits_of[groups[ex.seed_id]].add(ex.split)
+    assert all(len(s) == 1 for s in splits_of.values())
+    assert Counter(splits_of[g].pop() for g in splits_of) == {"train": 8, "val": 1, "test": 1}
+
+
 def test_held_out_bug_types_only_go_to_test_ood():
     examples = assign_splits(fake_examples(), holdout_bug_types=("missing_colon",))
     for ex in examples:

@@ -17,7 +17,7 @@ from pathlib import Path
 from .mutate import MUTATIONS
 from .sandbox import RunResult, run_sandboxed
 from .schema import BUG_TYPES, Example, write_jsonl
-from .seeds import Seed, load_seeds
+from .seeds import Seed, load_seeds, near_duplicate_groups
 
 V0_BUG_TYPES = [name for name, b in BUG_TYPES.items() if b.in_v0]
 SPLITS = ("train", "val", "test", "test_ood")
@@ -115,23 +115,28 @@ def assign_splits(
     holdout_bug_types: tuple[str, ...] = (),
     ratios: tuple[float, float, float] = (0.8, 0.1, 0.1),
     seed: int = 0,
+    groups: dict[str, str] | None = None,
 ) -> list[Example]:
-    """Split by seed_id (never by example) into train/val/test.
+    """Split by group of seeds (never by example) into train/val/test.
 
+    `groups` maps seed_id -> group id (see seeds.near_duplicate_groups), so near-copies
+    of a program land in the same split; without it, each seed is its own group.
     Examples of a held-out bug type go to "test_ood" regardless of seed, and
     those seeds' other examples stay in their normal split.
     """
-    seed_ids = sorted({ex.seed_id for ex in examples})
-    random.Random(seed).shuffle(seed_ids)
-    n_train = round(ratios[0] * len(seed_ids))
-    n_val = round(ratios[1] * len(seed_ids))
+    group_of = {ex.seed_id: (groups or {}).get(ex.seed_id, ex.seed_id) for ex in examples}
+    group_ids = sorted(set(group_of.values()))
+    random.Random(seed).shuffle(group_ids)
+    n_train = round(ratios[0] * len(group_ids))
+    n_val = round(ratios[1] * len(group_ids))
     split_of = {}
-    for i, seed_id in enumerate(seed_ids):
-        split_of[seed_id] = "train" if i < n_train else "val" if i < n_train + n_val else "test"
-    return [
-        replace(ex, split="test_ood" if ex.bug_type in holdout_bug_types else split_of[ex.seed_id])
-        for ex in examples
-    ]
+    for i, group_id in enumerate(group_ids):
+        split_of[group_id] = "train" if i < n_train else "val" if i < n_train + n_val else "test"
+    out = []
+    for ex in examples:
+        held_out = ex.bug_type in holdout_bug_types
+        out.append(replace(ex, split="test_ood" if held_out else split_of[group_of[ex.seed_id]]))
+    return out
 
 
 def counts(examples: list[Example]) -> dict:
@@ -168,7 +173,8 @@ def main() -> None:
     found = Counter(ex.bug_type for ex in examples)
     if args.per_type is not None:
         examples = balance(examples, args.per_type, seed=args.seed)
-    examples = assign_splits(examples, tuple(args.holdout), seed=args.seed)
+    groups = near_duplicate_groups(seeds)
+    examples = assign_splits(examples, tuple(args.holdout), seed=args.seed, groups=groups)
 
     for split in SPLITS:
         path = args.out / f"{split}.jsonl"
@@ -178,6 +184,7 @@ def main() -> None:
             write_jsonl(path, rows)
     stats = {"args": {k: str(v) for k, v in vars(args).items()}, **counts(examples)}
     stats["seeds_available"] = len(seeds)
+    stats["seed_groups"] = len({groups[ex.seed_id] for ex in examples})
     stats["found_before_balancing"] = dict(sorted(found.items()))
     (args.out / "stats.json").write_text(json.dumps(stats, indent=2) + "\n")
     print(json.dumps(stats, indent=2))

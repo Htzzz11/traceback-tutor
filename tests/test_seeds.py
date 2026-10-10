@@ -1,6 +1,13 @@
 import ast
 
-from traceback_tutor.seeds import Seed, clean_code, fingerprint, stdlib_only
+from traceback_tutor.seeds import (
+    Seed,
+    clean_code,
+    fingerprint,
+    near_duplicate_groups,
+    shape,
+    stdlib_only,
+)
 
 
 def test_clean_code_normalises_mbpp_formatting():
@@ -26,3 +33,37 @@ def test_with_tests_appends_the_test_calls_after_a_blank_line():
     seed = Seed("t", "def f(x):\n    return x", ["assert f(1) == 1", "assert f(2) == 2"])
     assert seed.with_tests() == "def f(x):\n    return x\n\nassert f(1) == 1\nassert f(2) == 2\n"
     assert seed.program_lines == 2
+
+
+# Near-copies found in MBPP by the leakage audit (mbpp-10/232, 768/855, 208/759, 461/818).
+SMALLEST = "import heapq\ndef small(xs, n):\n    return heapq.nsmallest(n, xs)"
+LARGEST = "import heapq\ndef large(ys, k):\n    return heapq.nlargest(k, ys)"
+IS_ODD = "def odd(x):\n    return x % 2 == 1"
+IS_EVEN = "def even(x):\n    return x % 2 != 0"
+IMPORT_TOP = "import re\ndef f(s):\n    return re.search(r'[0-9]+', s)"
+IMPORT_INSIDE = "def g(t):\n    import re\n    return re.search(r'[a-z]', t)"
+UPPER = (
+    "def upper(s):\n    n = 0\n    for i in range(len(s)):\n"
+    "        if s[i] >= 'A' and s[i] <= 'Z': n += 1\n        return n"
+)
+LOWER = (
+    "def lower(s):\n    n = 0\n    for i in range(len(s)):\n"
+    "        if s[i] >= 'a' and s[i] <= 'z': n += 1\n    return n"
+)
+UNRELATED = "def total(xs):\n    s = 0\n    for x in xs:\n        s += x\n    return s"
+
+
+def test_shape_ignores_attributes_constants_operators_and_imports():
+    for a, b in [(SMALLEST, LARGEST), (IS_ODD, IS_EVEN), (IMPORT_TOP, IMPORT_INSIDE)]:
+        assert shape(ast.parse(a)) == shape(ast.parse(b))
+    assert shape(ast.parse(IS_ODD)) != shape(ast.parse(UNRELATED))
+
+
+def test_near_duplicate_groups_join_near_copies_and_keep_others_apart():
+    codes = [SMALLEST, LARGEST, UPPER, LOWER, UNRELATED, IS_ODD, IS_EVEN]
+    seeds = [Seed(f"s{i}", code, []) for i, code in enumerate(codes)]
+    groups = near_duplicate_groups(seeds)
+    assert groups["s0"] == groups["s1"] == "s0"  # same shape
+    assert groups["s2"] == groups["s3"] == "s2"  # `return` indented differently: fuzzy match
+    assert groups["s5"] == groups["s6"] == "s5"
+    assert len(set(groups.values())) == 4 and groups["s4"] == "s4"
