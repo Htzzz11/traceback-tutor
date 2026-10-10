@@ -16,10 +16,14 @@ MAX_LINES = 50  # v1 scope: programs of about 50 lines or fewer
 # catches real infinite loops. All but one MBPP seed runs in < 0.5 s even under load;
 # that one takes 2-5 s depending on load and would make builds non-reproducible.
 SEED_TIMEOUT = 1.0
-# Programs whose AST node sequences are at least this similar count as near-duplicates.
-# Lower thresholds chain lookalike one-liners into huge groups (0.85: one group of 174
-# seeds), which would wreck the split ratios; at 0.95 the largest group is 21.
-SIMILARITY = 0.95
+# Near-duplicate thresholds on AST node sequences (see alike()). Looser values chain
+# lookalike one-liners into huge groups (similarity 0.85: one group of 174 seeds;
+# containment without MIN_NODES: 600+; without MAX_LENGTH_RATIO: 86), which would
+# wreck the split ratios. With these, the largest group is 21 seeds.
+SIMILARITY = 0.95  # share of all nodes matched
+CONTAINMENT = 0.97  # share of the shorter program matched, if containment applies:
+MIN_NODES = 20  # the shorter program has at least this many nodes, and
+MAX_LENGTH_RATIO = 1.5  # the longer one is at most this many times as long
 
 
 @dataclass
@@ -114,9 +118,10 @@ def near_duplicate_groups(seeds: list[Seed]) -> dict[str, str]:
     """Map each seed_id to a group id (the group's first seed_id) for splitting.
 
     MBPP has many near-copies, e.g. the same program with nsmallest/nlargest, == or !=,
-    'a'/'z' or 'A'/'Z'. Two programs share a group if they have the same shape(), or if
-    their AST node sequences are at least SIMILARITY alike; groups are joined
-    transitively. Splitting by group keeps every near-copy on one side of the split.
+    'a'/'z' or 'A'/'Z', or one extra dead line. Two programs share a group if they
+    have the same shape(), if their AST node sequences are alike(), or if every line of
+    one appears verbatim in the other; groups are joined transitively. Splitting by
+    group keeps every near-copy on one side of the split.
     """
     trees = {s.seed_id: ast.parse(s.code) for s in seeds}
     ids = list(trees)
@@ -137,18 +142,30 @@ def near_duplicate_groups(seeds: list[Seed]) -> dict[str, str]:
         join(i, first_with_shape.setdefault(shape(trees[i]), i))
 
     types = {i: node_types(trees[i]) for i in ids}
+    lines = {s.seed_id: {x.strip() for x in s.code.split("\n") if x.strip()} for s in seeds}
     for n, a in enumerate(ids):
         matcher = difflib.SequenceMatcher(None, b=types[a], autojunk=False)  # caches b
         for b in ids[n + 1 :]:
             matcher.set_seq1(types[b])
-            # the quick upper bounds skip most pairs before the slow exact ratio
-            if (
-                matcher.real_quick_ratio() >= SIMILARITY
-                and matcher.quick_ratio() >= SIMILARITY
-                and matcher.ratio() >= SIMILARITY
-            ):
+            if lines[a] <= lines[b] or lines[b] <= lines[a] or alike(matcher):
                 join(a, b)
     return {i: root(i) for i in ids}
+
+
+def alike(matcher: difflib.SequenceMatcher) -> bool:
+    """Whether the matched nodes reach SIMILARITY of all nodes, or CONTAINMENT of the
+    shorter program. Containment is for a near-copy with a line or two extra, so it
+    needs MIN_NODES and MAX_LENGTH_RATIO; otherwise small programs would be
+    "contained" in hundreds of bigger ones."""
+    len_a, len_b = len(matcher.a), len(matcher.b)
+    short = min(len_a, len_b)
+    needed = SIMILARITY * (len_a + len_b) / 2
+    if short >= MIN_NODES and max(len_a, len_b) <= MAX_LENGTH_RATIO * short:
+        needed = min(needed, CONTAINMENT * short)
+    # quick_ratio() bounds the match from above, so most pairs skip the slow exact count
+    if short < needed or matcher.quick_ratio() * (len_a + len_b) / 2 < needed:
+        return False
+    return sum(block.size for block in matcher.get_matching_blocks()) >= needed
 
 
 def shape(tree: ast.AST) -> str:

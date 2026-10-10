@@ -50,6 +50,18 @@ LOWER = (
     "def lower(s):\n    n = 0\n    for i in range(len(s)):\n"
     "        if s[i] >= 'a' and s[i] <= 'z': n += 1\n    return n"
 )
+PAIRS_SUM = (  # mbpp-527 vs 296: same nested pair loop, similarity only 0.91
+    "def pairs_sum(arr, n, s):\n    count = 0\n    for i in range(0, n):\n"
+    "        for j in range(i + 1, n):\n            if arr[i] + arr[j] == s:\n"
+    "                count += 1\n    return count"
+)
+INVERSIONS = (
+    "def inversions(arr, n):\n    c = 0\n    for i in range(n):\n"
+    "        for j in range(i + 1, n):\n            if (arr[i] > arr[j]):\n"
+    "                c += 1\n    return c"
+)
+DATE = "import re\ndef fmt(dt):\n    return re.sub(r'(\\d+)-(\\d+)', '\\2-\\1', dt)"
+DATE_DEAD_LINE = DATE + "\n    return fmt(dt)"  # mbpp-427 vs 928
 UNRELATED = "def total(xs):\n    s = 0\n    for x in xs:\n        s += x\n    return s"
 
 
@@ -61,9 +73,12 @@ def test_shape_ignores_attributes_constants_operators_and_imports():
 
 def test_near_duplicate_groups_join_near_copies_and_keep_others_apart():
     codes = [SMALLEST, LARGEST, UPPER, LOWER, UNRELATED, IS_ODD, IS_EVEN]
+    codes += [PAIRS_SUM, INVERSIONS, DATE, DATE_DEAD_LINE]
     seeds = [Seed(f"s{i}", code, []) for i, code in enumerate(codes)]
     groups = near_duplicate_groups(seeds)
     assert groups["s0"] == groups["s1"] == "s0"  # same shape
-    assert groups["s2"] == groups["s3"] == "s2"  # `return` indented differently: fuzzy match
+    assert groups["s2"] == groups["s3"] == "s2"  # `return` indented differently: similarity
     assert groups["s5"] == groups["s6"] == "s5"
-    assert len(set(groups.values())) == 4 and groups["s4"] == "s4"
+    assert groups["s7"] == groups["s8"] == "s7"  # containment
+    assert groups["s9"] == groups["s10"] == "s9"  # every line of one appears in the other
+    assert len(set(groups.values())) == 6 and groups["s4"] == "s4"
