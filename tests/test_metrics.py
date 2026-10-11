@@ -158,3 +158,16 @@ def test_bootstrap_seed_changes_resamples():
     assert bootstrap_ci(values, n_resamples=200, seed=0) != bootstrap_ci(
         values, n_resamples=200, seed=1
     )
+
+
+@pytest.mark.parametrize(
+    "bug_type, text",
+    [
+        ("misspelt_variable", "Line 5: Python doesn't know any variable called `totl`."),
+        ("str_plus_number", "Line 2: The program tries to add a number to that text."),
+        ("wrong_arg_count", "Line 4: `area` needs two values, but this call gives only one."),
+    ],
+)
+def test_teacher_style_plain_words_name_the_error(fixture_examples, bug_type, text):
+    # phrasings from the teacher's train/val references; they scored False before
+    assert score(by_type(fixture_examples, bug_type), text)["error_type_named"]

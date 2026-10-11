@@ -26,23 +26,30 @@ NUMERIC_METRICS = ("n_words",)
 
 # Plain-word ways of naming each exception, matched as lowercase substrings of the whole
 # response. The exception's own name ("nameerror") always counts too. One TypeError list
-# covers both v0 TypeError bugs (str + number, wrong number of arguments).
+# covers both v0 TypeError bugs (str + number, wrong number of arguments). The second
+# line of each v0 list is the teacher's plain-word style, taken from train/val references
+# only (never from test), so good answers in that style count.
 # fmt: off
 ERROR_KEYWORDS: dict[str, list[str]] = {
     "NameError": [
         "not defined", "undefined", "doesn't exist", "does not exist", "misspel", "typo",
         "spelled differently", "spelt differently", "no variable", "never created",
         "never defined", "never assigned", "unknown name",
+        "doesn't know", "does not know", "different name", "spelling differs",
     ],
     "TypeError": [
         "type", "concatenat", "text and a number", "string and a number", "str and int",
         "number and text", "number to text", "number to a string", "can't add",
         "argument", "parameter", "missing", "too many", "too few", "not enough",
         "only gives", "only passes", "expects",
+        "text rather than a number", "that text", "as text", "gives only", "gives it only",
+        "gives no value", "needs one value", "needs two values", "needs three values",
+        "needs at least", "enough values",
     ],
     "IndexError": [
         "out of range", "index", "position", "too far", "past the end", "beyond the end",
         "doesn't exist", "does not exist", "off by one", "off-by-one",
+        "one more", "empty",
     ],
     "SyntaxError": [
         "syntax", "colon", "':'", "isn't finished", "not finished", "unfinished",
@@ -86,8 +93,9 @@ def error_type_named(example: Example, response: str) -> bool:
 
     Approximation until the v1 LLM judge. Blind spots: a keyword can appear without
     actually explaining the error ("type" or "missing" in an unrelated sentence counts),
-    and a correct paraphrase not in the list doesn't count. Keyed by the exception
-    actually raised, so overlapping keywords between exceptions don't matter.
+    and a correct paraphrase not in the list doesn't count. The list includes the
+    teacher's phrasings, so it favours answers in the teacher's style. Keyed by the
+    exception actually raised, so overlapping keywords between exceptions don't matter.
     """
     text = _normalise(response)
     keywords = [example.error_type.lower(), *ERROR_KEYWORDS.get(example.error_type, [])]
