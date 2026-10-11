@@ -1,0 +1,28 @@
+# v0 LoRA run for mlx-lm 0.32:  uv run mlx_lm.lora -c train/lora_config.yaml
+# Keys are mlx_lm.lora's own option names (see `uv run mlx_lm.lora --help`);
+# command-line flags override anything set here.
+model: Qwen/Qwen2.5-Coder-1.5B-Instruct
+train: true
+data: data/v0/chat # train.jsonl + valid.jsonl from traceback_tutor.to_chat
+adapter_path: adapters/v0
+seed: 0
+
+fine_tune_type: lora
+num_layers: 16 # LoRA on the last 16 of 28 transformer blocks (mlx-lm default)
+lora_parameters:
+  rank: 8
+  scale: 20.0 # mlx-lm default; multiplies the LoRA update
+  dropout: 0.0
+
+optimizer: adam
+learning_rate: 1.0e-4
+batch_size: 4
+iters: 200 # ~2 epochs over ~400 training examples at batch size 4
+max_seq_length: 1024
+mask_prompt: true # loss only on the assistant turn (explanation + hint)
+grad_checkpoint: true # batch 4 x up to 1024 tokens peaked at 11.8 GB without it (limit 11.45 GB)
+
+steps_per_report: 10
+steps_per_eval: 50
+val_batches: -1 # whole validation set
+save_every: 50
