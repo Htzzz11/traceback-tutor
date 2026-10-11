@@ -168,3 +168,40 @@ def test_cli_skips_examples_already_done(tmp_path, monkeypatch, fixture_examples
     kept = list(read_jsonl(out_path))
     assert [ex.bug_type for ex in kept] == ["misspelt_variable"]
     assert len((tmp_path / "out.log.jsonl").read_text().splitlines()) == 5
+
+
+def test_filters_allow_real_false_positives_from_the_v0_run(fixture_examples):
+    # A method called `replace` is not the verb "replace X with Y".
+    ex = by_type(fixture_examples, "wrong_arg_count")
+    response = (
+        "Line 4: `replace` needs two values: the text to look for and the text to put in "
+        "its place.\n\nHint: How many values does each call provide?"
+    )
+    assert passes_filters(ex, response) == (True, "ok")
+    # "Did you mean: 'text'?" must not ban the English word "text".
+    ex = replace(
+        by_type(fixture_examples, "misspelt_variable"),
+        traceback="NameError: name 'tet' is not defined. Did you mean: 'text'?",
+    )
+    response = "Line 5: This line tries to clean up text using `tet`.\n\nHint: Same name?"
+    assert passes_filters(ex, response) == (True, "ok")
+
+
+def test_refilter_reapplies_filters_without_calling_the_api(
+    tmp_path, monkeypatch, fixture_examples
+):
+    client = FakeClient("Line 5: `totl` was never created.\n\nHint: Same name?")
+    monkeypatch.setattr(teacher, "OpenAI", lambda **kwargs: client)
+    in_path, out_path = tmp_path / "in.jsonl", tmp_path / "out.jsonl"
+    write_jsonl(in_path, fixture_examples)
+    teacher.main(["--in", str(in_path), "--out", str(out_path)])
+    assert len(list(read_jsonl(out_path))) == 1
+
+    # Loosen the filters: everything that completed now passes.
+    monkeypatch.setattr(teacher, "passes_filters", lambda ex, response: (True, "ok"))
+    teacher.main(["--in", str(in_path), "--out", str(out_path), "--refilter"])
+    assert len(client.requests) == 5  # no new calls
+    kept = list(read_jsonl(out_path))
+    assert len(kept) == 5 and all(ex.teacher_model == "gpt-6.1-sol" for ex in kept)
+    log = (tmp_path / "out.log.jsonl").read_text().splitlines()
+    assert all('"ok": true' in line for line in log)

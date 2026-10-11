@@ -27,7 +27,7 @@ from pathlib import Path
 from openai import OpenAI
 
 from .prompt import SYSTEM_PROMPT, build_user_message, format_response, parse_response
-from .schema import Example, read_jsonl
+from .schema import Example, read_jsonl, write_jsonl
 
 MODEL = "gpt-6.1-sol"
 REASONING_EFFORT = "low"  # lowest effort gpt-6.1-sol supports ("none"/"minimal" are not)
@@ -172,11 +172,13 @@ def explain(client: OpenAI, prefix: str, example: Example, model: str = MODEL) -
     """Ask the teacher for one Example's explanation and hint."""
     response = client.responses.create(**build_request(prefix, example, model))
     text = response.output_text or ""
-    parsed = parse_response(text)
-    labelled = replace(
-        example, explanation=parsed.explanation, hint=parsed.hint, teacher_model=model
-    )
+    labelled = _label(example, text, model)
     return TeacherResult(labelled, text, response.status, usage_from_response(response))
+
+
+def _label(example: Example, response: str, model: str) -> Example:
+    parsed = parse_response(response)
+    return replace(example, explanation=parsed.explanation, hint=parsed.hint, teacher_model=model)
 
 
 # ---------------------------------------------------------------- filters
@@ -217,10 +219,8 @@ def _names_suggestion(traceback: str, response: str) -> bool:
     m = re.search(r"Did you mean: '(\w+)'\?", traceback)
     if not m:
         return False
-    name = m.group(1)
-    # Short names like `n` or `a` only count in backticks; as bare words they are English.
-    pattern = rf"`{name}`" if len(name) < 3 else rf"\b{name}\b"
-    return re.search(pattern, response) is not None
+    # Only in backticks: names like `text` or `count` are also ordinary English words.
+    return f"`{m.group(1)}`" in response
 
 
 def passes_filters(example: Example, response: str) -> tuple[bool, str]:
@@ -244,7 +244,9 @@ def passes_filters(example: Example, response: str) -> tuple[bool, str]:
     )
     if any(_looks_like_rewrite(s, example.code, bug_src) for s in _CODE_SPAN_RE.findall(response)):
         return False, "corrected_code"
-    sentences = _SENTENCE_RE.findall(f"{parsed.explanation}\n{parsed.hint or ''}")
+    # Blank out code spans first, so a method called `replace` isn't read as the verb.
+    prose = _CODE_SPAN_RE.sub("`x`", f"{parsed.explanation}\n{parsed.hint or ''}")
+    sentences = _SENTENCE_RE.findall(prose)
     if any(r.search(s) for s in sentences for r in _FIX_RES):
         return False, "gives_fix"
     if _names_suggestion(example.traceback, response):
@@ -270,18 +272,55 @@ def _ids_in(path: Path) -> set[str]:
         return {json.loads(line)["id"] for line in f if line.strip()}
 
 
+def refilter(examples: list[Example], out_path: Path, log_path: Path) -> Counter:
+    """Re-apply passes_filters to every logged response and rewrite out_path and the log.
+
+    Use after changing the filters: the responses are already paid for.
+    """
+    by_id = {ex.id: ex for ex in examples}
+    with open(log_path, encoding="utf-8") as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    reasons, kept = Counter(), []
+    for row in rows:
+        ex = by_id[row["id"]]
+        if row["status"] != "completed":
+            row["ok"], row["reason"] = False, "incomplete"
+        else:
+            row["ok"], row["reason"] = passes_filters(ex, row["response"])
+        reasons[row["reason"]] += 1
+        if row["ok"]:
+            kept.append(_label(ex, row["response"], row.get("model", MODEL)))
+    write_jsonl(out_path, kept)
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.writelines(json.dumps(row) + "\n" for row in rows)
+    return reasons
+
+
+def _print_reasons(reasons: Counter) -> None:
+    print(f"kept {reasons['ok']} / {sum(reasons.values())}")
+    for reason, n in reasons.most_common():
+        if reason != "ok":
+            print(f"  rejected {reason}: {n}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--in", dest="in_paths", type=Path, nargs="+", required=True)
     parser.add_argument("--out", type=Path, required=True, help="labelled Examples that pass")
     parser.add_argument("--limit", type=int, default=None, help="max new API calls this run")
     parser.add_argument("--model", default=MODEL)
+    parser.add_argument(
+        "--refilter", action="store_true", help="re-apply the filters to logged responses, no API"
+    )
     args = parser.parse_args(argv)
 
     # Every call (passed or rejected) is logged next to --out, so a rerun never pays twice.
     log_path = args.out.with_name(args.out.stem + ".log.jsonl")
     done = _ids_in(args.out) | _ids_in(log_path)
     examples = [ex for path in args.in_paths for ex in read_jsonl(path)]
+    if args.refilter:
+        _print_reasons(refilter(examples, args.out, log_path))
+        return
     todo = [ex for ex in examples if ex.id not in done][: args.limit]
     print(f"{len(done)} already done, {len(todo)} to label with {args.model}")
 
@@ -305,6 +344,7 @@ def main(argv: list[str] | None = None) -> None:
                         "ok": ok,
                         "reason": reason,
                         "status": result.status,
+                        "model": args.model,
                         "response": result.response,
                         "usage": asdict(result.usage),
                     }
@@ -321,10 +361,8 @@ def main(argv: list[str] | None = None) -> None:
                 f"out {u.output}, reasoning {u.reasoning})"
             )
 
-    print(f"\nkept {reasons['ok']} / {len(todo)}")
-    for reason, n in reasons.most_common():
-        if reason != "ok":
-            print(f"  rejected {reason}: {n}")
+    print()
+    _print_reasons(reasons)
     print(
         f"tokens: input {total.input} (cached {total.cached_input}, cache write "
         f"{total.cache_write}), output {total.output} (reasoning {total.reasoning})"
