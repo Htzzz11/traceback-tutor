@@ -20,7 +20,7 @@ batch_size: 4
 iters: 200 # ~2 epochs over ~400 training examples at batch size 4
 max_seq_length: 1024
 mask_prompt: true # loss only on the assistant turn (explanation + hint)
-grad_checkpoint: false # turn on if memory runs out
+grad_checkpoint: true # batch 4 x up to 1024 tokens peaked at 11.8 GB without it (limit 11.45 GB)
 
 steps_per_report: 10
 steps_per_eval: 50
