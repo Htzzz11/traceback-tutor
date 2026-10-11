@@ -16,3 +16,6 @@ runs/
 
 # Private planning doc (kept local)
 docs/project-description.md
+
+# Working notes from the build (kept local)
+docs/notes/
