@@ -3,7 +3,7 @@ import json
 import pytest
 from conftest import FIXTURES
 
-from traceback_tutor.eval import run_eval
+from traceback_tutor.eval import compare, rescore, run_eval
 from traceback_tutor.generate import Generation
 from traceback_tutor.prompt import build_messages, format_response
 
@@ -43,6 +43,8 @@ def test_run_eval_end_to_end(tmp_path, fixture_examples):
     assert set(rows[0]) == {
         "id",
         "bug_type",
+        "bug_line",
+        "error_line",
         "response",
         "metrics",
         "seconds",
@@ -81,3 +83,37 @@ def test_refuses_to_overwrite_a_run(tmp_path, fixture_examples):
     with pytest.raises(SystemExit):
         run_eval.main(argv, generate_fn=generate_fn)
     run_eval.main([*argv, "--overwrite"], generate_fn=generate_fn)
+
+
+def test_rescore_reproduces_scores_and_records_commit(tmp_path, fixture_examples):
+    generate_fn, _ = oracle(fixture_examples)
+    first = run_eval.main(cli_args(tmp_path), generate_fn=generate_fn)
+    again = rescore.rescore(tmp_path / "t")
+    assert again["metrics"] == first["metrics"]
+    assert "git_commit" in again["config"]["rescored"]
+    assert again["config"]["data_sha256"] == first["config"]["data_sha256"]
+
+
+def test_compare_pairs_examples(tmp_path, fixture_examples):
+    good, _ = oracle(fixture_examples)
+
+    def no_hint(messages):
+        return Generation("Line 1: Something broke.", n_tokens=5, seconds=0.1, finish_reason="stop")
+
+    run_eval.main([*cli_args(tmp_path), "--name", "bad"], generate_fn=no_hint)
+    run_eval.main([*cli_args(tmp_path), "--name", "good"], generate_fn=good)
+    result = compare.compare(tmp_path / "bad", tmp_path / "good")
+    fmt = result["metrics"]["follows_format"]
+    assert (fmt["baseline"], fmt["candidate"], fmt["n"]) == (0, 5, 5)
+    assert fmt["diff"] == 1.0 and fmt["only_candidate"] == 5
+    assert fmt["mcnemar_p"] == pytest.approx(2 / 32)
+    # only the off-by-one fixture has its bug and crash on different lines
+    assert result["metrics"]["line_is_bug_line_when_bug_differs_from_crash"]["n"] == 1
+
+
+def test_compare_refuses_different_examples(tmp_path, fixture_examples):
+    good, _ = oracle(fixture_examples)
+    run_eval.main([*cli_args(tmp_path), "--name", "a"], generate_fn=good)
+    run_eval.main([*cli_args(tmp_path), "--name", "b", "--limit", "2"], generate_fn=good)
+    with pytest.raises(SystemExit):
+        compare.compare(tmp_path / "a", tmp_path / "b")

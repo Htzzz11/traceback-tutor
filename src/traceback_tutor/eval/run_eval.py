@@ -17,7 +17,7 @@ from pathlib import Path
 from ..generate import GENERATION_SETTINGS, GenerateFn, load, make_generate_fn
 from ..prompt import build_messages
 from ..schema import Example, read_jsonl
-from .metrics import BOOL_METRICS, NUMERIC_METRICS, aggregate, score
+from .metrics import BOOL_METRICS, NUMERIC_METRICS, WEAK_METRICS, aggregate, score
 
 
 def select_examples(
@@ -38,6 +38,8 @@ def run(examples: list[Example], generate_fn: GenerateFn, out_dir: Path, config:
             row = {
                 "id": ex.id,
                 "bug_type": ex.bug_type,
+                "bug_line": ex.bug_line,
+                "error_line": ex.error_line,
                 "response": gen.text,
                 "metrics": score(ex, gen.text),
                 "seconds": gen.seconds,
@@ -48,11 +50,15 @@ def run(examples: list[Example], generate_fn: GenerateFn, out_dir: Path, config:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
             f.flush()
             print(f"[{i}/{len(examples)}] {ex.id}: {gen.n_tokens} tokens in {gen.seconds:.1f}s")
+    return write_summary(rows, config, out_dir)
 
+
+def write_summary(rows: list[dict], config: dict, out_dir: Path) -> dict:
+    """Aggregate scored rows, add speed stats and config, and write metrics.json."""
     total_seconds = sum(r["seconds"] for r in rows)
     total_tokens = sum(r["n_tokens"] for r in rows)
     result = {
-        "config": {**config, "n": len(examples)},
+        "config": {**config, "n": len(rows)},
         **aggregate(rows),
         "speed": {
             "seconds_per_response": total_seconds / len(rows),
@@ -67,10 +73,13 @@ def run(examples: list[Example], generate_fn: GenerateFn, out_dir: Path, config:
 
 
 def format_table(result: dict) -> str:
-    lines = [f"n = {result['n']}", f"{'metric':<18} {'mean':>6}  95% CI"]
+    n = result["n"]
+    lines = [f"n = {n}", f"{'metric':<18} {'count':>7} {'mean':>6}  95% CI (Wilson)"]
     for name, m in result["metrics"].items():
+        count = f"{m['count']}/{n}" if "count" in m else ""
         ci = f"[{m['ci95'][0]:.2f}, {m['ci95'][1]:.2f}]" if "ci95" in m else ""
-        lines.append(f"{name:<18} {m['mean']:>6.2f}  {ci}")
+        weak = "  weak, don't compare" if name in WEAK_METRICS else ""
+        lines.append(f"{name:<18} {count:>7} {m['mean']:>6.2f}  {ci}{weak}")
 
     names = BOOL_METRICS + NUMERIC_METRICS
     lines += ["", "by bug type (means)", f"{'bug_type':<20} {'n':>3} " + " ".join(names)]
@@ -97,21 +106,31 @@ def _git(*args: str) -> str | None:
         return None
 
 
-def build_config(args: argparse.Namespace) -> dict:
+def git_info() -> dict:
     status = _git("status", "--porcelain")
+    return {
+        "git_commit": _git("rev-parse", "HEAD"),
+        "git_dirty": bool(status) if status is not None else None,
+        "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+
+
+def build_config(args: argparse.Namespace) -> dict:
     return {
         "name": args.name,
         "model": args.model,
         "adapter": args.adapter,
         "data": str(args.data),
-        "data_sha256": hashlib.sha256(Path(args.data).read_bytes()).hexdigest(),
+        "data_sha256": file_sha256(args.data),
         "split": args.split,
         "limit": args.limit,
         "generation": {**GENERATION_SETTINGS, "max_tokens": args.max_tokens},
-        "git_commit": _git("rev-parse", "HEAD"),
-        "git_dirty": bool(status) if status is not None else None,
-        "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
+        **git_info(),
     }
+
+
+def file_sha256(path: str | Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

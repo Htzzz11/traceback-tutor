@@ -3,11 +3,16 @@
 All metrics take an Example (with ground truth) and the raw model response text.
 `error_type_named` and `gives_fix` are keyword/rule approximations; the LLM judge
 in v1 replaces them. Their blind spots are listed in their docstrings.
+
+None of these check the body of a response: a wrong line number, a miscount or a
+wrong claim inside the explanation or hint goes unnoticed (see eval/audit_sheet.py).
 """
 
 from __future__ import annotations
 
 import ast
+import difflib
+import math
 import random
 import re
 from collections import defaultdict
@@ -23,6 +28,9 @@ BOOL_METRICS = (
     "gives_fix",
 )
 NUMERIC_METRICS = ("n_words",)
+# Reported, but too weak to compare systems on: echoing the traceback's last line scores
+# True, and the keyword list favours the teacher's phrasing (see error_type_named).
+WEAK_METRICS = ("error_type_named",)
 
 # Plain-word ways of naming each exception, matched as lowercase substrings of the whole
 # response. The exception's own name ("nameerror") always counts too. One TypeError list
@@ -76,12 +84,19 @@ _FIX_PHRASES = [
     r"\b(?:change|rename|replace)\s+`?[\w.()\[\]]+`?\s+(?:to|with|by)\s+`?[\w.()\[\]'\"]",
     # "change the loop condition to `i < len(xs)`": a few words, then code in backticks
     r"\b(?:change|rename|replace)\b[^.?!\n]{0,60}?\b(?:to|with|by)\s+`",
-    r"\bshould\s+(?:be|read|say)\s+`",  # "it should be `total`"
+    # "it should be `total`", "It should read: `...`", "Should it be `total`?"
+    r"\bshould\s+(?:\w+\s+){0,2}(?:be|read|say)\s*:?\s*`",
     r"\bdid you mean\b",  # echoing Python's "Did you mean: 'total'?" names the fix
+    # "The correct name is `count`", "The correct range should be from 0 to `len(s)`"
+    r"\bcorrect\s+(?:\w+\s+){1,2}(?:is|should|would)\b[^.?!\n]{0,30}`",
+    r"\bto fix (?:this|it|the error)\b|\bthe fix is\b",  # "To fix this, convert `i` ..."
 ]
 _FIX_PHRASE_RE = re.compile("|".join(_FIX_PHRASES), re.IGNORECASE)
 _FENCE_RE = re.compile(r"```[^\n]*\n(.*?)(?:```|$)", re.DOTALL)  # unclosed fence runs to end
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _LINE_NUMBER_PREFIX_RE = re.compile(r"^\s*\d+\s*\|\s?")  # echoed "5 | code" from the prompt
+_LABEL_RE = re.compile(r"^(?:Hint|Line\s+\d+)\s*:\s*", re.IGNORECASE)  # "Hint: <code>"
+_ELLIPSIS = {"...", "\u2026"}  # "..." standing for elided code in a quoted block
 
 
 def _normalise(text: str) -> str:
@@ -90,6 +105,11 @@ def _normalise(text: str) -> str:
 
 def error_type_named(example: Example, response: str) -> bool:
     """Does the response name the exception, or say what it means in plain words?
+
+    A weak sanity check (WEAK_METRICS): report it, but don't claim a difference between
+    systems with it. Echoing the traceback's last line scores True, and on v0 its sign
+    flipped with the keyword list (base 0.90 both times; LoRA 0.53 -> 0.98 after the
+    teacher's phrasings were added).
 
     Approximation until the v1 LLM judge. Blind spots: a keyword can appear without
     actually explaining the error ("type" or "missing" in an unrelated sentence counts),
@@ -104,6 +124,10 @@ def error_type_named(example: Example, response: str) -> bool:
 
 def _code_line(line: str) -> str:
     return _LINE_NUMBER_PREFIX_RE.sub("", line).strip()
+
+
+def _squash(text: str) -> str:
+    return "".join(text.split())  # compare code ignoring whitespace
 
 
 def _is_nontrivial_python(line: str) -> bool:
@@ -127,25 +151,43 @@ def _is_nontrivial_python(line: str) -> bool:
     return False
 
 
+def _is_edited_copy(span: str, code: str) -> bool:
+    """Is `span` a program line with a small edit, i.e. corrected code in backticks?
+
+    Spans that are copied from the program, or that only point at code (`i = 2`,
+    `list(...)`, `nlargest()`), aren't close enough to any line to count.
+    """
+    span = _squash(span)
+    if span in _squash(code):
+        return False
+    lines = [_squash(line) for line in code.splitlines() if line.strip()]
+    return any(difflib.SequenceMatcher(None, span, line).ratio() >= 0.8 for line in lines)
+
+
 def gives_fix(example: Example, response: str) -> bool:
     """Does the response hand over corrected code? (It should never.)
 
     True if any of these rules fires:
     1. A fenced code block contains a line that isn't copied from the program or the
-       traceback (quoting the buggy line is fine; writing new code isn't).
-    2. Any response line parses as non-trivial Python (see _is_nontrivial_python) and
-       isn't copied from the program. Catches unfenced corrected code.
-    3. A fix phrase (_FIX_PHRASES) outside fenced blocks: "change X to Y", "change the condition to `code`",
-       "replace X with Y", "should be `...`", "did you mean ...".
+       traceback, or "..." (quoting the buggy line is fine; writing new code isn't).
+    2. Any response line, minus a "Hint:" / "Line N:" label, parses as non-trivial
+       Python (see _is_nontrivial_python) and isn't copied from the program.
+    3. Outside fences, an inline `code` span is an edited copy of a program line
+       (_is_edited_copy): "write `return sm//count` instead" for `return sm//coount`.
+    4. Outside fences, a fix phrase (_FIX_PHRASES): "change X to Y", "replace X with Y",
+       "should be `...`", "Should it be `...`?", "did you mean", "the correct name is",
+       "to fix this".
 
     Blind spots: a fix described in words only ("add a colon at the end of line 2",
-    "use one less in the range", "convert `age` to a string") or as a question
-    ("Should it be `total`?"), and corrected code inside inline backticks without a fix
-    phrase ("use `str(age)`") are not caught. "change it to a string" is caught, which
-    is arguably right.
+    "use one less in the range", "convert `age` to a string"), naming the right
+    identifier without a fix phrase ("`count` is defined on line 2"), new code in inline
+    backticks that isn't close to a program line ("use `str(age)`"), and spelling out
+    exactly which value to pass are not caught. "change it to a string" is caught, which
+    is arguably right. "Missing a colon" is not a fix here: it restates Python's own
+    "expected ':'" message, which the style guide allows.
     """
     program = {line.strip() for line in example.code.splitlines()}
-    copied = program | {line.strip() for line in example.traceback.splitlines()}
+    copied = program | {line.strip() for line in example.traceback.splitlines()} | _ELLIPSIS
 
     for block in _FENCE_RE.findall(response):
         for line in block.splitlines():
@@ -153,11 +195,14 @@ def gives_fix(example: Example, response: str) -> bool:
             if line and line not in copied:
                 return True
     for line in response.splitlines():
-        line = _code_line(line)
+        line = _LABEL_RE.sub("", _code_line(line))
         if line and line not in program and _is_nontrivial_python(line):
             return True
-    prose = _FENCE_RE.sub("", response)  # fences were checked above (a quoted traceback
-    return bool(_FIX_PHRASE_RE.search(prose))  # may contain Python's own "Did you mean")
+    # Fences were checked above; a quoted traceback may contain Python's own "Did you mean".
+    prose = _FENCE_RE.sub("", response)
+    if any(_is_edited_copy(span, example.code) for span in _INLINE_CODE_RE.findall(prose)):
+        return True
+    return bool(_FIX_PHRASE_RE.search(prose))
 
 
 def score(example: Example, response: str) -> dict[str, bool | int]:
@@ -187,21 +232,36 @@ def _mean(xs: list[float]) -> float:
     return sum(xs) / len(xs)
 
 
+def wilson_ci(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score 95% interval for a proportion.
+
+    Unlike a percentile bootstrap it doesn't collapse to [1, 1] for 60/60: it gives
+    [0.94, 1.00], an honest statement of what 60 examples can show.
+    """
+    p = successes / n
+    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
 def bootstrap_ci(
     values: list[float], n_resamples: int = 2000, seed: int = 0
 ) -> tuple[float, float]:
-    """Percentile bootstrap 95% CI of the mean, resampling examples with replacement."""
+    """Percentile bootstrap 95% CI of the mean, resampling examples with replacement.
+
+    Used for paired differences between two systems (eval/compare.py).
+    """
     rng = random.Random(seed)
     n = len(values)
     means = sorted(_mean([values[rng.randrange(n)] for _ in range(n)]) for _ in range(n_resamples))
     return means[round(0.025 * (n_resamples - 1))], means[round(0.975 * (n_resamples - 1))]
 
 
-def aggregate(rows: list[dict], n_resamples: int = 2000, seed: int = 0) -> dict:
+def aggregate(rows: list[dict]) -> dict:
     """Summarise per-example rows ({"bug_type": ..., "metrics": score(...)}).
 
-    Returns {"n", "metrics": {name: {"mean", "ci95"?}}, "by_bug_type": {type: {"n", name: mean}}}.
-    Boolean metrics get a bootstrap 95% CI; n_words only a mean.
+    Returns {"n", "metrics": {name: {"mean", "count"?, "ci95"?}}, "by_bug_type": ...}.
+    Boolean metrics get their count of True and a Wilson 95% CI; n_words only a mean.
     """
     if not rows:
         raise ValueError("no rows to aggregate")
@@ -210,7 +270,9 @@ def aggregate(rows: list[dict], n_resamples: int = 2000, seed: int = 0) -> dict:
         values = [float(r["metrics"][name]) for r in rows]
         metrics[name] = {"mean": _mean(values)}
         if name in BOOL_METRICS:
-            metrics[name]["ci95"] = list(bootstrap_ci(values, n_resamples, seed))
+            count = int(sum(values))
+            metrics[name]["count"] = count
+            metrics[name]["ci95"] = list(wilson_ci(count, len(values)))
 
     groups: dict[str, list[dict]] = defaultdict(list)
     for r in rows:

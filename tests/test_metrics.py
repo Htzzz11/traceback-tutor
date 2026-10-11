@@ -1,6 +1,6 @@
 import pytest
 
-from traceback_tutor.eval.metrics import aggregate, bootstrap_ci, score
+from traceback_tutor.eval.metrics import aggregate, bootstrap_ci, score, wilson_ci
 from traceback_tutor.prompt import format_response
 
 
@@ -141,7 +141,9 @@ def test_aggregate_ci_contains_mean_and_is_deterministic():
 def test_aggregate_n_equals_one():
     a = aggregate(rows([True]))
     assert a["n"] == 1
-    assert a["metrics"]["follows_format"] == {"mean": 1.0, "ci95": [1.0, 1.0]}
+    m = a["metrics"]["follows_format"]
+    assert m["mean"] == 1.0 and m["count"] == 1
+    assert m["ci95"][0] == pytest.approx(0.21, abs=0.01) and m["ci95"][1] == pytest.approx(1.0)
 
 
 def test_aggregate_breaks_down_by_bug_type():
@@ -171,3 +173,44 @@ def test_bootstrap_seed_changes_resamples():
 def test_teacher_style_plain_words_name_the_error(fixture_examples, bug_type, text):
     # phrasings from the teacher's train/val references; they scored False before
     assert score(by_type(fixture_examples, bug_type), text)["error_type_named"]
+
+
+def test_wilson_does_not_collapse_at_the_boundary():
+    lo, hi = wilson_ci(60, 60)
+    assert lo == pytest.approx(0.94, abs=0.005) and hi == pytest.approx(1.0)
+    lo, hi = wilson_ci(0, 60)
+    assert lo == pytest.approx(0.0) and hi == pytest.approx(0.06, abs=0.005)
+
+
+@pytest.fixture
+def coount_example(fixture_examples):
+    return by_type(fixture_examples, "misspelt_variable")  # line 5: return totl
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Line 5: It should read: `return total`",
+        "Line 5: Write `return total` instead.\n\nHint: ?",
+        "Line 5: The correct name is `total`.\n\nHint: ?",
+        "Line 5: totl is not defined.\n\nHint: return total",
+        "Line 5: totl is not defined.\n\nHint: Should it be `total`?",
+        "Line 5: To fix this, use the name from line 2.\n\nHint: ?",
+    ],
+)
+def test_more_ways_of_giving_the_fix(coount_example, text):
+    # cases from the eval-skeptic review that the first version scored as no fix
+    assert score(coount_example, text)["gives_fix"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Line 5: When the loop ends, `n = 3` and `totl` was never created.\n\nHint: ?",
+        "Line 5: Compare the name inside `sum(...)` with line 2.\n\nHint: ?",
+        "Line 5: Here:\n```\n...\n    return totl\n```\n\nHint: ?",
+        "Line 5: The correct way to think about it is the name on line 2.\n\nHint: ?",
+    ],
+)
+def test_pointers_and_trace_values_are_not_fixes(coount_example, text):
+    assert not score(coount_example, text)["gives_fix"]
