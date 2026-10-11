@@ -89,3 +89,15 @@ def test_near_duplicate_groups_join_near_copies_and_keep_others_apart():
     assert groups["s7"] == groups["s8"] == "s7"  # containment
     assert groups["s9"] == groups["s10"] == "s9"  # every line of one appears in the other
     assert len(set(groups.values())) == 6 and groups["s4"] == "s4"
+
+
+def test_near_duplicate_groups_join_programs_defining_the_same_function():
+    # mbpp-420/837: two different `cube_Sum` formulas, AST similarity only 0.75
+    odd = (
+        "def cube_Sum(n):\n    s = 0\n    for i in range(n):\n        s += (2*i+1)**3\n    return s"
+    )
+    even = "def cube_Sum(n):\n    total = 0\n    for k in range(1, n + 1):\n        total += 8*k*k*k\n    return total"
+    groups = near_duplicate_groups(
+        [Seed("a", odd, []), Seed("b", even, []), Seed("c", UNRELATED, [])]
+    )
+    assert groups == {"a": "a", "b": "a", "c": "c"}

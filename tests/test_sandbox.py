@@ -50,6 +50,14 @@ def test_stdlib_paths_are_normalised():
     assert STDLIB_DIR not in r.traceback and "/usr/lib/python3.12/re/" in r.traceback
 
 
+def test_syntax_warnings_do_not_garble_the_traceback():
+    # '\d' is an invalid escape: 3.12 warns at compile time *and* again while drawing ^^^
+    code = "import re\ndef f(s):\n    return re.findall('\\d+')\n\nf('a1')\n"
+    r = run_sandboxed(code)
+    assert r.error_type == "TypeError" and "SyntaxWarning" not in r.traceback
+    assert r.traceback.startswith("Traceback (most recent call last):")
+
+
 def test_error_type_parsing():
     assert parse_error_type("Traceback ...\nValueError: bad\n") == "ValueError"
     assert parse_error_type("...\njson.decoder.JSONDecodeError: x") == "JSONDecodeError"

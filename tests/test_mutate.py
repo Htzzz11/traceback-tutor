@@ -87,6 +87,13 @@ def test_misspell_makes_a_new_one_letter_typo():
         assert typo not in taken and typo[0] == "t" and abs(len(typo) - 5) <= 1
 
 
+def test_misspell_leaves_underscores_and_digits_alone():
+    for rng_seed in range(30):
+        typo = misspell("left_el2", random.Random(rng_seed), set())
+        assert "__" not in typo and typo.count("_") == 1 and typo.endswith("2")
+        assert typo.index("_") in (3, 4, 5)  # only the letters around it moved
+
+
 def test_misspelt_variable_skips_short_names():
     seed = Seed("t", "def f(x):\n    return x", ["assert f(1) == 1"])
     assert mutate("misspelt_variable", seed) is None
@@ -193,7 +200,7 @@ def test_off_by_one_needs_an_index():
 def test_wrong_arg_count_only_sometimes_uses_a_test_call():
     # The program has no call of its own: no automatic fallback to the test call.
     seed = Seed("t", "def area(w, h):\n    return w * h", ["assert area(4, 3) == 12"])
-    mutants = [mutate("wrong_arg_count", seed, s) for s in range(100)]
+    mutants = [mutate("wrong_arg_count", seed, s) for s in range(200)]
     used = [m for m in mutants if m is not None]
     assert 0 < len(used) < 15
     for m in used:  # a test call only ever loses an argument
@@ -215,18 +222,39 @@ def test_wrong_arg_count_adds_an_argument_only_to_the_students_own_functions():
 
 
 def test_wrong_arg_count_prefers_calls_in_the_program():
-    seed = Seed("t", "def size(xs):\n    return len(xs)", ["assert size([1]) == 1"])
-    in_tests = sum(mutate("wrong_arg_count", seed, s).bug_line == 4 for s in range(100))
-    assert 0 < in_tests < 25
+    seed = Seed("t", "def fix(s):\n    return s.replace('a', 'b')", ["assert fix('a') == 'b'"])
+    in_tests = sum(mutate("wrong_arg_count", seed, s).bug_line == 4 for s in range(200))
+    assert 0 < in_tests < 15
+
+
+def test_wrong_arg_count_never_empties_a_one_argument_builtin():
+    # len() or range() with nothing inside isn't a learner's mistake
+    seed = Seed("t", "def f(xs):\n    return list(range(len(xs)))", ["assert f([1]) == [0]"])
+    for s in range(50):
+        m = mutate("wrong_arg_count", seed, s)
+        assert m is None or m.bug_line == 4  # only ever the test call
+
+
+def test_wrong_arg_count_never_drops_a_long_argument():
+    seed = Seed(
+        "t",
+        "def pos(xs, k):\n    return pow(sum(x for x in xs if x > 0), k)",
+        ["assert pos([1, -2, 3], 2) == 16"],
+    )
+    lines = {mutate("wrong_arg_count", seed, s).code.split("\n")[1] for s in range(30)}
+    assert lines == {"    return pow(sum(x for x in xs if x > 0))"}
 
 
 def test_wrong_arg_count_keeps_keyword_arguments():
     seed = Seed(
-        "t", "def desc(xs):\n    return sorted(xs, reverse=True)", ["assert desc([1, 2]) == [2, 1]"]
+        "t",
+        "def scale(x, k, offset=0):\n    return x * k + offset\n\n"
+        "def run(x):\n    return scale(x, 2, offset=1)",
+        ["assert run(3) == 7"],
     )
-    codes = {mutate("wrong_arg_count", seed, s).code.split("\n")[1] for s in range(20)}
-    assert "    return sorted(reverse=True)" in codes
-    assert_crashes_as("wrong_arg_count", seed.with_tests().replace("xs, reverse", "reverse"))
+    lines = {mutate("wrong_arg_count", seed, s).code.split("\n")[4] for s in range(40)}
+    assert "    return scale(x, offset=1)" in lines
+    assert_crashes_as("wrong_arg_count", seed.with_tests().replace("x, 2, offset", "x, offset"))
 
 
 # missing_colon

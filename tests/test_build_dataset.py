@@ -32,6 +32,15 @@ SEEDS = [
         "    return count",
         ["assert count_evens([1, 2, 4]) == 2"],
     ),
+    Seed(
+        "mbpp-3",
+        "def area(w, h):\n"
+        "    return w * h\n"
+        "\n"
+        "def total_area(rects):\n"
+        "    return sum(area(w, h) for w, h in rects)",
+        ["assert total_area([(1, 2), (3, 4)]) == 14"],
+    ),
 ]
 
 

@@ -91,7 +91,10 @@ def _command(tmp_dir: Path) -> list[str]:
     # -s: ignore user site-packages. Not -I: it would also ignore PYTHONHASHSEED, and a
     # fixed hash seed keeps set/dict ordering (and so which mutants crash) reproducible.
     # The environment is passed explicitly, which covers the rest of what -I protects.
-    cmd = [sys.executable, "-s", FILENAME]
+    # -W ignore::SyntaxWarning: MBPP regexes like '\d+' trigger "invalid escape
+    # sequence" warnings, and 3.12 re-emits them *inside* a traceback while drawing the
+    # ^^^ markers (quoting the wrong line), which garbles the traceback.
+    cmd = [sys.executable, "-s", "-W", "ignore::SyntaxWarning", FILENAME]
     if sys.platform == "darwin" and shutil.which("sandbox-exec"):
         cmd = ["sandbox-exec", "-p", _SANDBOX_PROFILE.format(dir=tmp_dir), *cmd]
     return cmd
