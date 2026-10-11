@@ -129,6 +129,13 @@ def test_str_plus_number_can_store_a_number_as_text_and_crash_later():
     assert bug_lines == {2, 5}  # `count = "0"` crashes on line 5 too
 
 
+def test_str_plus_number_skips_numbers_inside_bigger_expressions():
+    # quotes inside range() or a larger formula look nothing like a learner's mistake
+    for line in ["return sum(range(n + 1))", "y = (n + 1) * 2", "return n + 1 + n"]:
+        seed = Seed("t", f"def f(n):\n    {line}", ["f(2)"])
+        assert mutate("str_plus_number", seed) is None, line
+
+
 def test_str_plus_number_handles_non_ascii_lines():
     seed = Seed("t", 'def f(n):\n    return "café: " + str(n)', ['assert f(1) == "café: 1"'])
     assert mutate("str_plus_number", seed).code.split("\n")[1] == '    return "café: " + n'
@@ -137,10 +144,24 @@ def test_str_plus_number_handles_non_ascii_lines():
 # off_by_one_index
 
 
-def test_off_by_one_loop_bound_crashes_on_the_next_line():
-    mutants = {mutate("off_by_one_index", MAX_ITEM, s).code for s in range(20)}
-    [code] = [c for c in mutants if "range(len(xs) + 1)" in c]
-    assert_crashes_as("off_by_one_index", code, error_line=4)  # bug_line is 3
+def test_off_by_one_always_uses_a_loop_bound_when_there_is_one():
+    # MAX_ITEM also has xs[0] and xs[i] sites, but the loop bound is the classic bug
+    mutants = [mutate("off_by_one_index", MAX_ITEM, s) for s in range(20)]
+    [(code, bug_line)] = {(m.code, m.bug_line) for m in mutants}
+    assert "range(len(xs) + 1)" in code and bug_line == 3
+    assert_crashes_as("off_by_one_index", code, error_line=4)  # crash is a line later
+
+
+def test_off_by_one_while_condition():
+    seed = Seed(
+        "t",
+        "def total(xs):\n    i, s = 0, 0\n    while i < len(xs):\n        s += xs[i]\n"
+        "        i += 1\n    return s",
+        ["assert total([1, 2]) == 3"],
+    )
+    m = mutate("off_by_one_index", seed)
+    assert m.bug_line == 3 and "while i <= len(xs):" in m.code
+    assert_crashes_as("off_by_one_index", m.code, error_line=4)
 
 
 @pytest.mark.parametrize(
@@ -169,15 +190,28 @@ def test_off_by_one_needs_an_index():
 # wrong_arg_count
 
 
-def test_wrong_arg_count_on_a_test_call_drops_or_adds_an_argument():
+def test_wrong_arg_count_only_sometimes_uses_a_test_call():
+    # The program has no call of its own: no automatic fallback to the test call.
     seed = Seed("t", "def area(w, h):\n    return w * h", ["assert area(4, 3) == 12"])
-    seen = set()
-    for rng_seed in range(30):
-        m = mutate("wrong_arg_count", seed, rng_seed)
-        assert m.bug_line == 4  # the program has no call, so the test call is used
-        seen.add(m.code.split("\n")[3])
+    mutants = [mutate("wrong_arg_count", seed, s) for s in range(100)]
+    used = [m for m in mutants if m is not None]
+    assert 0 < len(used) < 15
+    for m in used:  # a test call only ever loses an argument
+        assert m.bug_line == 4
+        assert m.code.split("\n")[3] in {"assert area(4) == 12", "assert area(3) == 12"}
         assert_crashes_as("wrong_arg_count", m.code, error_line=4)
-    assert seen == {"assert area(4) == 12", "assert area(3) == 12", "assert area(4, 3, 3) == 12"}
+
+
+def test_wrong_arg_count_adds_an_argument_only_to_the_students_own_functions():
+    seed = Seed(
+        "t",
+        "def helper(a, b):\n    return a * b\n\ndef area(w, h):\n    return helper(w, h) + len([w])",
+        ["assert area(4, 3) == 13"],
+    )
+    lines = {mutate("wrong_arg_count", seed, s).code.split("\n")[4] for s in range(40)}
+    assert "    return helper(w, h, h) + len([w])" in lines
+    assert "    return helper(w) + len([w])" in lines
+    assert not any("len([w], [w])" in line for line in lines)
 
 
 def test_wrong_arg_count_prefers_calls_in_the_program():
