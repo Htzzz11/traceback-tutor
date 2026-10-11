@@ -21,8 +21,8 @@ SEED_TIMEOUT = 1.0
 # Near-duplicate thresholds on AST node sequences (see alike()). Looser values chain
 # lookalike one-liners into huge groups (similarity 0.85: one group of 174 seeds;
 # containment without MIN_NODES: 600+; without MAX_LENGTH_RATIO: 86), which would
-# wreck the split ratios. With these, the largest group is 21 seeds.
-SIMILARITY = 0.95  # share of all nodes matched
+# wreck the split ratios. With these, the largest group is 24 seeds.
+SIMILARITY = 0.94  # share of all nodes matched
 CONTAINMENT = 0.97  # share of the shorter program matched, if containment applies:
 MIN_NODES = 20  # the shorter program has at least this many nodes, and
 MAX_LENGTH_RATIO = 1.5  # the longer one is at most this many times as long
@@ -129,8 +129,10 @@ def near_duplicate_groups(seeds: list[Seed]) -> dict[str, str]:
 
     MBPP has many near-copies, e.g. the same program with nsmallest/nlargest, == or !=,
     'a'/'z' or 'A'/'Z', or one extra dead line. Two programs share a group if they
-    have the same shape(), if their AST node sequences are alike(), or if every line of
-    one appears verbatim in the other; groups are joined transitively. Splitting by
+    have the same shape(), define a top-level function with the same name (MBPP's
+    rephrased tasks often reuse it: two `cube_Sum`s, two `sort_tuple`s), if their AST
+    node sequences are alike(), or if every line of one appears verbatim in the other;
+    groups are joined transitively. Splitting by
     group keeps every near-copy on one side of the split.
     """
     trees = {s.seed_id: ast.parse(s.code) for s in seeds}
@@ -147,9 +149,12 @@ def near_duplicate_groups(seeds: list[Seed]) -> dict[str, str]:
         ra, rb = sorted((root(a), root(b)), key=position.get)
         parent[rb] = ra
 
-    first_with_shape: dict[str, str] = {}
+    first_with: dict[str, str] = {}  # shape or function name -> first seed that has it
     for i in ids:
-        join(i, first_with_shape.setdefault(shape(trees[i]), i))
+        join(i, first_with.setdefault(shape(trees[i]), i))
+        for node in trees[i].body:
+            if isinstance(node, ast.FunctionDef):
+                join(i, first_with.setdefault(f"def {node.name}", i))
 
     types = {i: node_types(trees[i]) for i in ids}
     lines = {s.seed_id: {x.strip() for x in s.code.split("\n") if x.strip()} for s in seeds}

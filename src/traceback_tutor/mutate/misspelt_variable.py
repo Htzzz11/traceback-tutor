@@ -37,12 +37,15 @@ def apply(code: str, program_lines: int, rng: random.Random) -> MutationResult |
 
 
 def misspell(name: str, rng: random.Random, taken: set[str]) -> str | None:
-    """A one-letter typo of `name` that isn't already a name. The first letter is kept."""
+    """A one-letter typo of `name` that isn't already a name. The first letter is kept,
+    and `_` and digits are never moved or doubled (`left__element` isn't a real typo)."""
     options = set()
     for i in range(1, len(name)):
+        if not name[i].isalpha():
+            continue
         options.add(name[:i] + name[i + 1 :])  # drop a letter: total -> totl
         options.add(name[:i] + name[i] + name[i:])  # double a letter: total -> tottal
-        if i + 1 < len(name) and name[i] != name[i + 1]:
+        if i + 1 < len(name) and name[i + 1].isalpha() and name[i] != name[i + 1]:
             options.add(name[:i] + name[i + 1] + name[i] + name[i + 2 :])  # swap: total -> toatl
     options = sorted(
         o for o in options if o.isidentifier() and not keyword.iskeyword(o) and o not in taken
