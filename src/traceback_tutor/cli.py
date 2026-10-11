@@ -8,80 +8,17 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
-import subprocess
 import sys
-import tempfile
 import textwrap
 from pathlib import Path
 
-from . import sandbox
 from .generate import GenerateFn, load, make_generate_fn
 from .prompt import build_messages, parse_response
-from .sandbox import RunResult
+from .sandbox import run_sandboxed
 
 DEFAULT_MODEL = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
 DEFAULT_ADAPTER = Path("adapters/v0")
 TIMEOUT = 5.0
-
-
-# TODO: remove once stream A's sandbox lands
-def _run_fallback(code: str, timeout: float = TIMEOUT) -> RunResult:
-    """Minimal stand-in for sandbox.run_sandboxed: run as main.py in a temp dir, no limits."""
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / sandbox.FILENAME
-        path.write_text(code, encoding="utf-8")
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-I", sandbox.FILENAME],
-                cwd=tmp,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                stdin=subprocess.DEVNULL,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as e:
-            stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else e.stdout or ""
-            return RunResult(
-                crashed=False,
-                timed_out=True,
-                error_type=None,
-                error_line=None,
-                traceback="",
-                stdout=stdout,
-            )
-        if proc.returncode == 0:
-            return RunResult(
-                crashed=False,
-                timed_out=False,
-                error_type=None,
-                error_line=None,
-                traceback="",
-                stdout=proc.stdout,
-            )
-        tb = proc.stderr
-        # macOS: /private/var/... resolves from /var/...; replace the longer path first
-        for p in sorted({str(path), str(path.resolve())}, key=len, reverse=True):
-            tb = tb.replace(p, sandbox.FILENAME)
-        tb = tb[tb.find("Traceback (most recent call last):") :] if "Traceback (" in tb else tb
-        error_type = re.match(r"(\w+)", tb.strip().splitlines()[-1]) if tb.strip() else None
-        lines = re.findall(rf'File "{sandbox.FILENAME}", line (\d+)', tb)
-        return RunResult(
-            crashed=True,
-            timed_out=False,
-            error_type=error_type.group(1) if error_type else None,
-            error_line=int(lines[-1]) if lines else None,
-            traceback=tb,
-            stdout=proc.stdout,
-        )
-
-
-def run_file(code: str) -> RunResult:
-    try:
-        return sandbox.run_sandboxed(code, timeout=TIMEOUT)
-    except NotImplementedError:
-        return _run_fallback(code)  # TODO: remove once stream A's sandbox lands
 
 
 def format_explanation(code: str, response: str) -> str:
@@ -113,12 +50,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None, generate_fn: GenerateFn | None = None) -> int:
-    """Exit code 0 if the program ran fine, 1 if it crashed (and was explained), 2 on timeout."""
+    """Exit code 0 if the program ran fine, 1 if it crashed (and was explained), 2 if it was
+    stopped for running too long or using too much memory."""
     args = parse_args(argv)
     code = args.file.read_text(encoding="utf-8")
-    result = run_file(code)
+    result = run_sandboxed(code, timeout=TIMEOUT)
     if result.timed_out:
         print(f"Your program didn't finish within {TIMEOUT:.0f} seconds (an endless loop?).")
+        return 2
+    if result.out_of_memory:
+        print("Your program was stopped for using too much memory.")
         return 2
     if not result.crashed:
         print("Your program ran without errors.")

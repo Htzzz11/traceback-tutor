@@ -47,9 +47,11 @@ def test_unparseable_response_is_printed_raw(tmp_path, capsys):
     assert capsys.readouterr().out.rstrip().endswith("I think the index is too big.")
 
 
-def test_fallback_runner_matches_fixture_tracebacks(fixture_examples):
-    for ex in fixture_examples:
-        result = cli._run_fallback(ex.code)
-        assert result.crashed and result.error_type == ex.error_type, ex.id
-        assert result.error_line == ex.error_line, ex.id
-        assert result.traceback == ex.traceback, ex.id
+def test_endless_loop_times_out(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(cli, "TIMEOUT", 0.5)
+    path = tmp_path / "loop.py"
+    path.write_text("while True:\n    pass\n")
+    generate_fn, calls = fake_generate("unused")
+    assert cli.main([str(path)], generate_fn=generate_fn) == 2
+    assert "didn't finish" in capsys.readouterr().out
+    assert calls == []
