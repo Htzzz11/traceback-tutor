@@ -25,6 +25,10 @@ Hint: <one question>
 - **Point at the right line.** Talk about the bug line. If the crash happened on a different line,
   mention both and say how they're connected ("the range on line 3 also produces 3, so line 4 asks
   for a position that doesn't exist").
+- **Don't trust the name in a "missing argument" error.** Python fills values in from the left and
+  names the last parameter it couldn't fill. That may not be the value the student left out (in
+  `find_Max(mid + 1, high)`, Python says `high` is missing). Say how many values the function
+  needs and how many the call gives, not which one is missing.
 - **Short.** 1–3 sentences and under 80 words.
 - You can quote small pieces of the student's own code in backticks, such as `totl` or `age`.
   Never quote code the student hasn't written.
